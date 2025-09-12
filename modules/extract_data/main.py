@@ -164,8 +164,8 @@ class Extract:
             nonlocal _paddle
             if _paddle is None and _HAS_PADDLE:
                 # Se você tiver modelos locais "server v2.0", detecte e use:
-                det_path = os.path.join(self.project_root, "ocr_models", "ch_ppocr_server_v2.0_det_infer")
-                rec_path = os.path.join(self.project_root, "ocr_models", "ch_ppocr_server_v2.0_rec_infer")
+                det_path = os.path.join(self.project_root, "ch_ppocr_server_v2.0_det_infer")
+                rec_path = os.path.join(self.project_root, "ch_ppocr_server_v2.0_rec_infer")
                 kwargs = dict(use_angle_cls=True, lang='en', det=True, rec=True, show_log=False)
                 if os.path.isdir(det_path): kwargs["det_model_dir"] = det_path
                 if os.path.isdir(rec_path): kwargs["rec_model_dir"] = rec_path
