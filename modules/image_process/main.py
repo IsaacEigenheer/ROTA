@@ -7,6 +7,7 @@ import fitz
 from typing import Optional
 import cv2
 import numpy as np
+import csv
 
 class Image:
     def __init__(self, path: str, dpi: int, page: int, id: int, project_root: str):
@@ -192,6 +193,8 @@ class Image:
         """
         Detecta regiões nas imagens já filtradas por cor e salva os recortes em
         self.project_root/temp/{id}/components_extracted/{component}/.
+        Além disso, salva um CSV com as coordenadas (x,y,w,h) de cada detecção
+        e o tipo do componente (housing, lenghts, lines, nodes).
         Retorna um dict { component: [lista_de_caminhos_salvos] }.
         """
 
@@ -199,149 +202,169 @@ class Image:
 
         images = {
             "housing": os.path.join(base_images_dir, f"{self.id}_blue.png"),
-            "lenghts": os.path.join(base_images_dir, f"{self.id}_green.png"),
+            "lenghts": os.path.join(base_images_dir, f"{self.id}_green.png"),   # mantém 'lenghts' p/ compatibilidade
             "lines":   os.path.join(base_images_dir, f"{self.id}_yellow.png"),
             "nodes":   os.path.join(base_images_dir, f"{self.id}_red.png"),
         }
 
+        base_out_root = os.path.join(self.project_root, "temp", self.id, "components_extracted")
         images_save_dir = {
-            "housing": os.path.join(self.project_root, "temp", self.id, "components_extracted", "housing"),
-            "lenghts": os.path.join(self.project_root, "temp", self.id, "components_extracted", "lenghts"),
-            "lines":   os.path.join(self.project_root, "temp", self.id, "components_extracted", "lines"),
-            "nodes":   os.path.join(self.project_root, "temp", self.id, "components_extracted", "nodes"),
+            "housing": os.path.join(base_out_root, "housing"),
+            "lenghts": os.path.join(base_out_root, "lenghts"),  # idem
+            "lines":   os.path.join(base_out_root, "lines"),
+            "nodes":   os.path.join(base_out_root, "nodes"),
         }
+        os.makedirs(base_out_root, exist_ok=True)
+
+        # ===== [NOVO] CSV de detecções =====
+        detections_csv = os.path.join(base_out_root, "detections.csv")
+        csv_header = ["component", "x", "y", "w", "h", "area", "src_image", "saved_crop"]
+        csv_file = open(detections_csv, mode="w", newline="", encoding="utf-8")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(csv_header)
+        # ===================================
 
         results = {}
         min_area = 50       # filtra pequenos ruídos; ajuste conforme necessário
         pad = 2             # padding ao redor do bbox cortado
 
-        # =================== [NOVO] parâmetros de upscale e borda ===================
+        # =================== parâmetros de upscale e borda ===================
         UPSCALE_FACTOR = 2.0                 # fator de ampliação
         BORDER_PX = 4                        # pixels de borda a adicionar após o upscale
         SHARPEN_AMOUNT = 1.5                 # nitidez para texto/linhas (sem alpha)
         SHARPEN_NEG = -0.5                   # peso do blur na máscara de nitidez
-        # ===========================================================================
+        # =====================================================================
 
-        for component, image_path in images.items():
-            saved_paths = []
-            out_dir = images_save_dir[component]
-            os.makedirs(out_dir, exist_ok=True)
+        try:
+            for component, image_path in images.items():
+                saved_paths = []
+                out_dir = images_save_dir[component]
+                os.makedirs(out_dir, exist_ok=True)
 
-            if not os.path.isfile(image_path):
-                print(f"[detect_components] Imagem não encontrada para '{component}': {image_path}")
-                results[component] = saved_paths
-                continue
-
-            img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-            if img is None:
-                print(f"[detect_components] Falha ao ler: {image_path}")
-                results[component] = saved_paths
-                continue
-
-            # separa canais
-            has_alpha = (img.ndim == 3 and img.shape[2] == 4)
-            if has_alpha:
-                bgr = img[:, :, :3]
-                alpha = img[:, :, 3]
-            else:
-                if img.ndim == 2:
-                    bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-                else:
-                    bgr = img
-
-            # cria máscara binária: se tiver alpha, use alpha; senão threshold no cinza
-            if has_alpha:
-                mask = (alpha > 0).astype("uint8") * 255
-            else:
-                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-
-            # limpa ruído
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-            # ---------- ALTERAÇÃO pré-existente: máscara horizontal para 'lenghts' ----------
-            if component == "lenghts":
-                h_img, w_img = mask.shape[:2]
-                kx = max(15, int(max(15, w_img * 0.002)))  # 2% da largura ou 15 px
-                kernel_horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, 1))
-                detect_mask = cv2.dilate(mask, kernel_horiz, iterations=2)
-                detect_mask = cv2.morphologyEx(detect_mask, cv2.MORPH_CLOSE, kernel_horiz)
-                work_mask = detect_mask
-            else:
-                work_mask = mask
-            # -------------------------------------------------------------------------------
-
-            # detecta componentes conectados (usa work_mask)
-            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(work_mask, connectivity=8)
-
-            saved_count = 0
-            h_img, w_img = mask.shape[:2]  # dimensões da máscara original
-
-            for lbl in range(1, num_labels):  # pula o label 0 (background)
-                x, y, w, h, area = stats[lbl]
-                if area < min_area:
+                if not os.path.isfile(image_path):
+                    print(f"[detect_components] Imagem não encontrada para '{component}': {image_path}")
+                    results[component] = saved_paths
                     continue
 
-                # aplica padding e mantém dentro da imagem
-                x0 = max(x - pad, 0)
-                y0 = max(y - pad, 0)
-                x1 = min(x + w + pad, w_img)
-                y1 = min(y + h + pad, h_img)
+                img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+                if img is None:
+                    print(f"[detect_components] Falha ao ler: {image_path}")
+                    results[component] = saved_paths
+                    continue
 
-                # corta a região da imagem original (preservando alpha se houver)
+                # separa canais
+                has_alpha = (img.ndim == 3 and img.shape[2] == 4)
                 if has_alpha:
-                    crop = img[y0:y1, x0:x1]  # BGRA
+                    bgr = img[:, :, :3]
+                    alpha = img[:, :, 3]
                 else:
-                    crop = bgr[y0:y1, x0:x1]  # BGR
+                    if img.ndim == 2:
+                        bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                    else:
+                        bgr = img
 
-                # ====================== [NOVO] UPSCALE + TRATAMENTO DE BORDAS ======================
-                # 1) Upscale (aumenta a resolução do recorte antes de salvar)
-                #    Usa INTER_CUBIC para melhor qualidade em texto/linhas finas.
-                interp = cv2.INTER_CUBIC
-                up = cv2.resize(crop, None, fx=UPSCALE_FACTOR, fy=UPSCALE_FACTOR, interpolation=interp)
-
-                # 2) Tratamento de bordas
-                if up.ndim == 3 and up.shape[2] == 4:
-                    # a) Refina e suaviza levemente o canal alpha para remover "serrilhados"
-                    up_bgr = up[:, :, :3]
-                    up_alpha = up[:, :, 3]
-
-                    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                    up_alpha = cv2.morphologyEx(up_alpha, cv2.MORPH_CLOSE, k, iterations=1)
-                    up_alpha = cv2.GaussianBlur(up_alpha, (3, 3), 0)
-
-                    up = cv2.cvtColor(up_bgr, cv2.COLOR_BGR2BGRA)
-                    up[:, :, 3] = up_alpha
-
-                    # b) Adiciona uma borda transparente para evitar cortes no anti-aliasing
-                    up = cv2.copyMakeBorder(
-                        up, BORDER_PX, BORDER_PX, BORDER_PX, BORDER_PX,
-                        borderType=cv2.BORDER_CONSTANT, value=(0, 0, 0, 0)
-                    )
+                # cria máscara binária: se tiver alpha, use alpha; senão threshold no cinza
+                if has_alpha:
+                    mask = (alpha > 0).astype("uint8") * 255
                 else:
-                    # a) Realça nitidez para melhorar legibilidade de texto/linhas
-                    blur = cv2.GaussianBlur(up, (0, 0), 1.0)
-                    up = cv2.addWeighted(up, SHARPEN_AMOUNT, blur, SHARPEN_NEG, 0)
+                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
 
-                    # b) Adiciona borda branca para manter afastamento visual
-                    up = cv2.copyMakeBorder(
-                        up, BORDER_PX, BORDER_PX, BORDER_PX, BORDER_PX,
-                        borderType=cv2.BORDER_CONSTANT, value=(255, 255, 255)
-                    )
-                # =====================================================================================
+                # limpa ruído
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-                out_name = f"{self.id}_{component}_{lbl}.png"
-                out_path = os.path.join(out_dir, out_name)
-                ok = cv2.imwrite(out_path, up)  # <-- salva a versão tratada e ampliada
-                if ok:
-                    saved_paths.append(out_path)
-                    saved_count += 1
+                # máscara horizontal para 'lenghts'
+                if component == "lenghts":
+                    h_img, w_img = mask.shape[:2]
+                    kx = max(15, int(max(15, w_img * 0.002)))  # 2% da largura ou 15 px
+                    kernel_horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, 1))
+                    detect_mask = cv2.dilate(mask, kernel_horiz, iterations=2)
+                    detect_mask = cv2.morphologyEx(detect_mask, cv2.MORPH_CLOSE, kernel_horiz)
+                    work_mask = detect_mask
                 else:
-                    print(f"[detect_components] Falha ao salvar recorte: {out_path}")
+                    work_mask = mask
 
-            print(f"[detect_components] '{component}': detectadas {num_labels-1} regiões, salvas {saved_count} recortes em {out_dir}")
-            results[component] = saved_paths
+                # detecta componentes conectados (usa work_mask)
+                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(work_mask, connectivity=8)
 
+                saved_count = 0
+                h_img, w_img = mask.shape[:2]  # dimensões da máscara original
+
+                for lbl in range(1, num_labels):  # pula o label 0 (background)
+                    x, y, w, h, area = stats[lbl]
+                    if area < min_area:
+                        continue
+
+                    # aplica padding e mantém dentro da imagem
+                    x0 = max(x - pad, 0)
+                    y0 = max(y - pad, 0)
+                    x1 = min(x + w + pad, w_img)
+                    y1 = min(y + h + pad, h_img)
+
+                    # corta a região da imagem original (preservando alpha se houver)
+                    if has_alpha:
+                        crop = img[y0:y1, x0:x1]  # BGRA
+                    else:
+                        crop = bgr[y0:y1, x0:x1]  # BGR
+
+                    # ====================== UPSCALE + TRATAMENTO DE BORDAS ======================
+                    interp = cv2.INTER_CUBIC
+                    up = cv2.resize(crop, None, fx=UPSCALE_FACTOR, fy=UPSCALE_FACTOR, interpolation=interp)
+
+                    if up.ndim == 3 and up.shape[2] == 4:
+                        up_bgr = up[:, :, :3]
+                        up_alpha = up[:, :, 3]
+                        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                        up_alpha = cv2.morphologyEx(up_alpha, cv2.MORPH_CLOSE, k, iterations=1)
+                        up_alpha = cv2.GaussianBlur(up_alpha, (3, 3), 0)
+                        up = cv2.cvtColor(up_bgr, cv2.COLOR_BGR2BGRA)
+                        up[:, :, 3] = up_alpha
+                        up = cv2.copyMakeBorder(
+                            up, BORDER_PX, BORDER_PX, BORDER_PX, BORDER_PX,
+                            borderType=cv2.BORDER_CONSTANT, value=(0, 0, 0, 0)
+                        )
+                    else:
+                        blur = cv2.GaussianBlur(up, (0, 0), 1.0)
+                        up = cv2.addWeighted(up, SHARPEN_AMOUNT, blur, SHARPEN_NEG, 0)
+                        up = cv2.copyMakeBorder(
+                            up, BORDER_PX, BORDER_PX, BORDER_PX, BORDER_PX,
+                            borderType=cv2.BORDER_CONSTANT, value=(255, 255, 255)
+                        )
+                    # ==============================================================================
+
+                    out_name = f"{self.id}_{component}_{lbl}.png"
+                    out_path = os.path.join(out_dir, out_name)
+                    ok = cv2.imwrite(out_path, up)
+                    if ok:
+                        saved_paths.append(out_path)
+                        saved_count += 1
+
+                        # ===== [NOVO] grava linha no CSV de detecções =====
+                        bbox_w = x1 - x0
+                        bbox_h = y1 - y0
+                        csv_writer.writerow([
+                            component,
+                            int(x0), int(y0), int(bbox_w), int(bbox_h),
+                            int(area),
+                            os.path.abspath(image_path),
+                            os.path.abspath(out_path),
+                        ])
+                        # ===================================================
+                    else:
+                        print(f"[detect_components] Falha ao salvar recorte: {out_path}")
+
+                print(f"[detect_components] '{component}': detectadas {num_labels-1} regiões, salvas {saved_count} recortes em {out_dir}")
+                results[component] = saved_paths
+
+        finally:
+            # garante fechamento do CSV mesmo em caso de exceção
+            try:
+                csv_file.close()
+            except Exception:
+                pass
+
+        print(f"[detect_components] CSV de detecções salvo em: {detections_csv}")
         return results
+
