@@ -384,3 +384,460 @@ class Extract:
 
         print(f"[DONE] OCR finalizado. Resultados gravados em: {csv_path}")
         return csv_path
+
+    def ocr_components_to_csv(
+        self,
+        preprocess: str = "thresh",
+        min_confidence: float = -1.0,
+        psm: int = 7,
+        debug: bool = True,
+        ocr_engine: str = "paddle"
+    ) -> Tuple[str, str]:
+        """
+        Roda OCR nos recortes de 'housing' (azul) e 'nodes' (vermelho) listados no detections.csv.
+        Usa saved_crop como image_path. Segmenta texto (mais escuro) do fundo (um pouco mais claro)
+        dentro da mesma faixa de matiz; fallback k-means se Otsu falhar.
+
+        Gera:
+        - components_extracted/housing.csv   (Hx, image_path, x, y, w, h)
+        - components_extracted/nodes.csv     (Nx, image_path, x, y, w, h)
+
+        Retorna (path_housing_csv, path_nodes_csv).
+        """
+        import csv
+
+        base_out_root = os.path.join(self.project_root, "temp", self.id, "components_extracted")
+        detections_csv = os.path.join(base_out_root, "detections.csv")
+        housing_csv = os.path.join(base_out_root, "housing.csv")
+        nodes_csv   = os.path.join(base_out_root, "nodes.csv")
+
+        if not os.path.isfile(detections_csv):
+            raise FileNotFoundError(f"Não encontrei {detections_csv}")
+
+        # --------- helpers de OCR (mesmos motores do seu pipeline) ---------
+        # (repetimos localmente para não depender de escopo interno do outro método)
+        _HAS_PADDLE = False
+        _HAS_EASYOCR = False
+        try:
+            from paddleocr import PaddleOCR  # type: ignore
+            _HAS_PADDLE = True
+        except Exception:
+            PaddleOCR = None  # type: ignore
+
+        try:
+            import easyocr  # type: ignore
+            _HAS_EASYOCR = True
+        except Exception:
+            easyocr = None  # type: ignore
+
+        _paddle = None
+        _easy = None
+
+        def _get_paddle():
+            nonlocal _paddle
+            if _paddle is None and _HAS_PADDLE:
+                det_path = os.path.join(self.project_root, "ch_ppocr_server_v2.0_det_infer")
+                rec_path = os.path.join(self.project_root, "ch_ppocr_server_v2.0_rec_infer")
+                kwargs = dict(use_angle_cls=True, lang='en', det=True, rec=True, show_log=False)
+                if os.path.isdir(det_path): kwargs["det_model_dir"] = det_path
+                if os.path.isdir(rec_path): kwargs["rec_model_dir"] = rec_path
+                _paddle = PaddleOCR(**kwargs)
+            return _paddle
+
+        def _get_easy():
+            nonlocal _easy
+            if _easy is None and _HAS_EASYOCR:
+                _easy = easyocr.Reader(['en'], gpu=False, verbose=False)
+            return _easy
+
+        def _choose_engine() -> str:
+            if ocr_engine == "tesseract":
+                return "tesseract"
+            if ocr_engine == "paddle":
+                return "paddle" if _HAS_PADDLE else ("easyocr" if _HAS_EASYOCR else "tesseract")
+            if ocr_engine == "easyocr":
+                return "easyocr" if _HAS_EASYOCR else ("paddle" if _HAS_PADDLE else "tesseract")
+            # auto
+            if _HAS_PADDLE: return "paddle"
+            if _HAS_EASYOCR: return "easyocr"
+            return "tesseract"
+
+        def _ocr_tesseract(bin_img: np.ndarray) -> Dict[str, Any]:
+            proc_up = cv2.resize(bin_img, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+            config = f'--oem 3 --psm {psm} -c preserve_interword_spaces=1'
+            raw_text = pytesseract.image_to_string(proc_up, config=config)
+            data = pytesseract.image_to_data(proc_up, output_type=Output.DICT, config=config)
+            n = len(data.get('text', []))
+            lines = []
+            byline = {}
+            for i in range(n):
+                txt = (data['text'][i] or "").strip()
+                if not txt: continue
+                key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
+                byline.setdefault(key, []).append(i)
+            for key, idxs in byline.items():
+                idxs_sorted = sorted(idxs, key=lambda k: data['left'][k])
+                words = [(data['text'][i] or "").strip() for i in idxs_sorted if (data['text'][i] or "").strip()]
+                if not words: continue
+                line_text = " ".join(words)
+                confs = []
+                for i in idxs_sorted:
+                    try:
+                        c = float(data['conf'][i])
+                        if c >= 0: confs.append(c)
+                    except Exception:
+                        pass
+                mean_conf = float(np.mean(confs)) if confs else -1.0
+                lines.append({"text": line_text, "conf": mean_conf})
+            return {"lines": lines, "raw": raw_text}
+
+        def _ocr_paddle(bgr_img: np.ndarray) -> Dict[str, Any]:
+            ocr = _get_paddle()
+            if ocr is None: raise RuntimeError("PaddleOCR não disponível")
+            res = ocr.ocr(bgr_img, cls=True)
+            lines = []; raw_parts = []
+            if not res: return {"lines": [], "raw": ""}
+            for page in res:
+                if not page: continue
+                for det in page:
+                    if not det or len(det) < 2: continue
+                    info = det[1]
+                    txt = None; cf = -1.0
+                    if isinstance(info,(list,tuple)):
+                        if len(info)>=1 and info[0] is not None: txt = str(info[0])
+                        if len(info)>=2 and info[1] is not None:
+                            try: cf = float(info[1])
+                            except: cf = -1.0
+                    if not txt or not txt.strip(): continue
+                    raw_parts.append(txt)
+                    lines.append({"text": txt.strip(), "conf": cf})
+            return {"lines": lines, "raw": "\n".join(raw_parts)}
+
+        def _ocr_easy(bgr_img: np.ndarray) -> Dict[str, Any]:
+            reader = _get_easy()
+            if reader is None: raise RuntimeError("EasyOCR não disponível")
+            results = reader.readtext(bgr_img, detail=0, paragraph=False)
+            lines = []; raw_parts = []
+            for txt in results:
+                if not txt: continue
+                raw_parts.append(txt)
+                lines.append({"text": str(txt), "conf": -1.0})
+            return {"lines": lines, "raw": "\n".join(raw_parts)}
+
+        def _run_ocr(engine: str, bgr_or_bin: np.ndarray, use_bgr: bool = True) -> Dict[str, Any]:
+            if engine == "paddle":
+                try: return _ocr_paddle(bgr_or_bin if use_bgr else cv2.cvtColor(bgr_or_bin, cv2.COLOR_GRAY2BGR))
+                except Exception as e:
+                    if debug: print("[WARN] PaddleOCR falhou:", e)
+            if engine == "easyocr":
+                try: return _ocr_easy(bgr_or_bin if use_bgr else cv2.cvtColor(bgr_or_bin, cv2.COLOR_GRAY2BGR))
+                except Exception as e:
+                    if debug: print("[WARN] EasyOCR falhou:", e)
+            return _ocr_tesseract(bgr_or_bin if not use_bgr else cv2.cvtColor(bgr_or_bin, cv2.COLOR_BGR2GRAY))
+
+        # --------- segmentação por cor (texto escuro x fundo claro na MESMA matiz) ---------
+        def _segment_text_by_hue(bgr: np.ndarray, color: str) -> np.ndarray:
+            """
+            Retorna imagem binária (uint8) com texto preto (0) em branco (255),
+            isolando por faixa de matiz ('blue' ou 'red') e separando texto (mais escuro)
+            do fundo (mais claro) por Otsu (fallback k-means).
+            """
+            assert color in ("blue","red")
+            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+            H,S,V = hsv[:,:,0], hsv[:,:,1], hsv[:,:,2]
+
+            if color == "blue":
+                hue_mask = (H >= 90) & (H <= 140) & (S >= 30) & (V >= 30)
+            else:
+                # vermelho: duas faixas (wrap)
+                hue_mask = ((H <= 10) | (H >= 170)) & (S >= 30) & (V >= 30)
+
+            # pega somente os pixels na faixa da cor alvo
+            mask = hue_mask.astype(np.uint8)*255
+            if np.count_nonzero(mask) < 10:
+                # fallback: usa o cinza inteiro se a máscara ficou vazia
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+                inv = 255 - th
+                return inv if np.mean(inv) > np.mean(th) else th
+
+            # aplica Otsu no brilho (V) APENAS dentro da máscara
+            v_vals = V[mask==255].astype(np.uint8)
+            try:
+                # Otsu precisa de histograma; aplicamos no vetor v_vals
+                # construção de limiar global mas aplicado só na máscara
+                th_val, _ = cv2.threshold(v_vals, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+                # texto é a classe mais escura → pixels com V < th_val
+                text_bin_full = (V < th_val).astype(np.uint8)*255
+            except Exception:
+                # fallback k-means (k=2) no vetor v_vals
+                vs = v_vals.reshape(-1,1).astype(np.float32)
+                criteria = (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
+                _,labels,centers = cv2.kmeans(vs, 2, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+                c0,c1 = centers.flatten().tolist()
+                dark_label = int(0 if c0<=c1 else 1)
+                # reconstrói máscara global
+                tmp = np.zeros_like(V, dtype=np.uint8)
+                tmp[mask==255] = (labels.flatten()==dark_label).astype(np.uint8)*255
+                text_bin_full = tmp
+
+            # aplica a máscara de cor (garante que fora dela vira fundo)
+            text_bin_full[mask==0] = 0  # nada fora da cor
+            # queremos texto PRETO em fundo BRANCO para Tesseract
+            # então invertendo se necessário:
+            inv = 255 - text_bin_full
+            return inv if np.mean(inv) > np.mean(text_bin_full) else text_bin_full
+
+        # --------- Normalização de rótulos ---------
+        re_housing = re.compile(r'\b[HB]\s*-?\s*(\d+)\b', flags=re.IGNORECASE)
+        re_nodes   = re.compile(r'\bN\s*-?\s*(\d+)\b', flags=re.IGNORECASE)
+
+        def _fix_digits(s: str) -> str:
+            t = []
+            for ch in s:
+                if ch in 'Oo': t.append('0')
+                elif ch in 'Il': t.append('1')
+                else: t.append(ch)
+            return ''.join(t)
+
+        def _parse_housing(text: str) -> Optional[str]:
+            m = re_housing.search(text)
+            if not m: return None
+            num = _fix_digits(m.group(1))
+            return f"H{num}"
+
+        def _parse_node(text: str) -> Optional[str]:
+            m = re_nodes.search(text)
+            if not m: return None
+            num = _fix_digits(m.group(1))
+            return f"N{num}"
+
+        # --------- Carrega detections, filtra e processa ---------
+        rows = []
+        with open(detections_csv, "r", encoding="utf-8") as f:
+            rdr = csv.DictReader(f)
+            for r in rdr:
+                if r.get("component") in ("housing", "nodes"):
+                    rows.append(r)
+
+        if debug:
+            print(f"[OCR-COMP] total recortes a processar: {len(rows)}")
+
+        # CSVs de saída
+        with open(housing_csv, "w", newline="", encoding="utf-8") as fh, \
+            open(nodes_csv,   "w", newline="", encoding="utf-8") as fn:
+
+            wh = csv.writer(fh); wh.writerow(["Hx", "image_path", "x", "y", "w", "h"])
+            wn = csv.writer(fn); wn.writerow(["Nx", "image_path", "x", "y", "w", "h"])
+
+            engine = _choose_engine()
+            if debug: print(f"[OCR-COMP] OCR engine used = {engine}")
+
+            for r in rows:
+                comp = r["component"]
+                img_path = r["saved_crop"]
+                x = int(float(r["x"])); y = int(float(r["y"]))
+                w = int(float(r["w"])); h = int(float(r["h"]))
+
+                bgr = cv2.imread(img_path)
+                if bgr is None:
+                    print(f"[WARN] Falha ao abrir recorte: {img_path}")
+                    continue
+
+                # segmenta por cor e cria binário (texto preto em branco)
+                color = "blue" if comp == "housing" else "red"
+                bin_img = _segment_text_by_hue(bgr, color=color)
+
+                # roda OCR (engines que preferem BGR recebem conversão)
+                ocr_out = _run_ocr(engine, bgr if engine != "tesseract" else bin_img, use_bgr=(engine!="tesseract"))
+                lines = ocr_out.get("lines", [])
+                if debug:
+                    print(f"[OCR-COMP] {comp} -> {os.path.basename(img_path)}; candidates={len(lines)}")
+
+                # pega a melhor linha (maior conf; se -1.0, usa a primeira não vazia)
+                best_id = None
+                best_conf = -2.0
+                for ln in lines:
+                    txt = (ln.get("text") or "").strip()
+                    cf  = float(ln.get("conf", -1.0))
+                    if not txt: continue
+                    if cf > best_conf:
+                        best_conf = cf
+                        best_id = txt
+
+                if not best_id:
+                    print(f"[WARN] OCR vazio em {comp}: {img_path}")
+                    continue
+
+                if comp == "housing":
+                    ident = _parse_housing(best_id)
+                    if not ident:
+                        print(f"[WARN] Falha em parse housing: '{best_id}' ({img_path})")
+                        continue
+                    wh.writerow([ident, os.path.abspath(img_path), x, y, w, h])
+
+                else:  # nodes
+                    ident = _parse_node(best_id)
+                    if not ident:
+                        print(f"[WARN] Falha em parse node: '{best_id}' ({img_path})")
+                        continue
+                    wn.writerow([ident, os.path.abspath(img_path), x, y, w, h])
+
+        if debug:
+            print(f"[OCR-COMP] CSVs gerados: {housing_csv} | {nodes_csv}")
+
+        return housing_csv, nodes_csv
+
+    def find_line_connections(self, debug: bool = True, point_radius: int = 3) -> str:
+        """
+        Lê detections.csv + housing.csv + nodes.csv e gera connections.csv
+        vinculando cada linha (L1, L2, ...) a dois componentes (Hx/Nx) por
+        containment de endpoints. StartSide/EndSide = L/R (esq/dir).
+        """
+        import csv
+
+        base = os.path.join(self.project_root, "temp", self.id, "components_extracted")
+        det_csv = os.path.join(base, "detections.csv")
+        house_csv = os.path.join(base, "housing.csv")
+        nodes_csv = os.path.join(base, "nodes.csv")
+        out_csv = os.path.join(base, "connections.csv")
+
+        if not (os.path.isfile(det_csv) and os.path.isfile(house_csv) and os.path.isfile(nodes_csv)):
+            raise FileNotFoundError("detections.csv / housing.csv / nodes.csv ausentes")
+
+        # carrega housing/nodes -> lista de dicts {id,label,x,y,w,h,image_path}
+        def _load_comp(path: str, label_col: str) -> List[Dict[str,Any]]:
+            out = []
+            with open(path, "r", encoding="utf-8") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    try:
+                        label = r[label_col]
+                        x = int(float(r["x"])); y = int(float(r["y"]))
+                        w = int(float(r["w"])); h = int(float(r["h"]))
+                        out.append({
+                            "label": label,
+                            "x": x, "y": y, "w": w, "h": h,
+                            "image_path": r.get("image_path","")
+                        })
+                    except Exception:
+                        pass
+            return out
+
+        housings = _load_comp(house_csv, "Hx")
+        nodes    = _load_comp(nodes_csv,  "Nx")
+        comps = housings + nodes
+
+        # carrega linhas do detections
+        det_rows = []
+        with open(det_csv, "r", encoding="utf-8") as f:
+            rdr = csv.DictReader(f)
+            for r in rdr:
+                if r.get("component") == "lines":
+                    det_rows.append(r)
+
+        def _contains(ptx:int, pty:int, bx:int, by:int, bw:int, bh:int) -> bool:
+            return (ptx >= bx) and (ptx <= bx + bw) and (pty >= by) and (pty <= by + bh)
+
+        def _square_intersection_area(px:int, py:int, bx:int, by:int, bw:int, bh:int, r:int) -> int:
+            # interseção entre quadrado centrado no ponto (lado=2r) e o bbox
+            sx0, sy0 = px - r, py - r
+            sx1, sy1 = px + r, py + r
+            bx0, by0 = bx, by
+            bx1, by1 = bx + bw, by + bh
+            ix0, iy0 = max(sx0, bx0), max(sy0, by0)
+            ix1, iy1 = min(sx1, bx1), min(sy1, by1)
+            iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+            return iw * ih
+
+        def _parse_float_or_blank(s: str) -> Optional[float]:
+            s = (s or "").strip()
+            if s == "": return None
+            try: return float(s)
+            except: return None
+
+        # poderá recalcular endpoints se necessário
+        def _recalc_endpoints_if_needed(row: Dict[str,str]) -> Optional[Tuple[int,int,int,int]]:
+            gx1 = _parse_float_or_blank(row.get("x1")); gy1 = _parse_float_or_blank(row.get("y1"))
+            gx2 = _parse_float_or_blank(row.get("x2")); gy2 = _parse_float_or_blank(row.get("y2"))
+            if None not in (gx1,gy1,gx2,gy2):
+                return (int(gx1),int(gy1),int(gx2),int(gy2))
+            # recalcula via recorte salvo
+            crop_path = row.get("saved_crop")
+            if not crop_path or not os.path.isfile(crop_path):
+                return None
+            bgr = cv2.imread(crop_path)
+            if bgr is None: return None
+            # estima no recorte local
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(cv2.GaussianBlur(gray,(3,3),0), 50, 150, apertureSize=3, L2gradient=True)
+            h, w = gray.shape[:2]
+            linesP = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=max(20,int(0.02*max(h,w))),
+                                    minLineLength=max(10,int(0.25*min(h,w))), maxLineGap=max(5,int(0.02*max(h,w))))
+            best = None; max_len = 0.0
+            if linesP is not None:
+                for seg in linesP.reshape(-1,4):
+                    x1,y1,x2,y2 = map(int, seg)
+                    L = float(np.hypot(x2-x1, y2-y1))
+                    if L > max_len:
+                        max_len = L; best = (x1,y1,x2,y2)
+            if best is None:
+                # fallback: extremos horizontais do bbox local
+                yc = h//2; best = (0,yc, max(1,w-1), yc)
+            # converte p/ global
+            bx, by = int(float(row["x"])), int(float(row["y"]))
+            return (bx+best[0], by+best[1], bx+best[2], by+best[3])
+
+        # escreve connections.csv
+        with open(out_csv, "w", newline="", encoding="utf-8") as fo:
+            wcsv = csv.writer(fo)
+            wcsv.writerow(["LineID", "StartComponent", "EndComponent", "StartSide", "EndSide", "x1", "y1", "x2", "y2"])
+
+            for i, r in enumerate(det_rows, start=1):
+                LID = f"L{i}"
+
+                # endpoints globais
+                eps = _recalc_endpoints_if_needed(r)
+                if eps is None:
+                    if debug: print(f"[WARN] Sem endpoints para {LID}, pulando.")
+                    continue
+                x1,y1,x2,y2 = eps
+
+                # define L/R (esq/dir) de forma consistente
+                # regra: menor x = Start(L), maior x = End(R); empate quebra por menor y
+                start = (x1,y1); end = (x2,y2)
+                if (x2 < x1) or (x2 == x1 and y2 < y1):
+                    start, end = (x2,y2), (x1,y1)
+
+                # encontra componente contendo cada endpoint
+                def _match(pt):
+                    px,py = pt
+                    candidates = []
+                    for c in comps:
+                        bx,by,bw,bh = c["x"],c["y"],c["w"],c["h"]
+                        if _contains(px,py,bx,by,bw,bh):
+                            inter = _square_intersection_area(px,py,bx,by,bw,bh, point_radius)
+                            candidates.append((inter, c))
+                    if not candidates:
+                        return None
+                    candidates.sort(key=lambda t: t[0], reverse=True)
+                    return candidates[0][1]
+
+                c_start = _match(start)
+                c_end   = _match(end)
+
+                if c_start is None or c_end is None:
+                    if debug:
+                        print(f"[WARN] Endpoint sem componente em {LID}: start_in={f'{c_start is not None}, {c_start}'}, end_in={f'{c_end is not None}, {c_end}'}")
+                    # conforme combinado: registra aviso e pula
+                    continue
+
+                lab_start = c_start["label"]  # Hx ou Nx
+                lab_end   = c_end["label"]
+
+                wcsv.writerow([LID, lab_start, lab_end, "L", "R", start[0], start[1], end[0], end[1]])
+
+        if debug:
+            print(f"[CONN] connections.csv gerado em {out_csv}")
+
+        return out_csv

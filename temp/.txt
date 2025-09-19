@@ -1,0 +1,146 @@
+perfeito — abaixo vai um plano de execução focado em como montar o documento (ferramentas, ordem de trabalho, layouts e controles), considerando a janela máxima de 9 meses e o seu plano 1–5. A ideia é você “preencher” com os conteúdos já definidos do projeto, sem travar na formatação.
+
+Ferramentas (para produzir o documento, não o produto)
+
+Matriz & cronogramas: Excel/Google Sheets (Gantt simples com formatação condicional) + exportar como imagem para o Word.
+
+Documento: Word (.docx) com estilos (Título 1/2/3, Legenda, Tabela) e Sumário automático; controle de versões com OneDrive/Google Drive (ou Git se preferir).
+
+Referências: Zotero (plugin Word) para citar e gerar “Referências”.
+
+Diagramas: draw.io (ou PowerPoint) para um swimlane do fluxo e um mapa de riscos; exportar PNG 300 dpi.
+
+Rastreabilidade: numeração de entregáveis “E-Tx.y” (Ex.: E-T1.2) usada em todas as tabelas.
+
+Se quiser, após estruturar, eu gero os templates (DOCX + planilha Gantt/KPIs) com as tabelas vazias para você só preencher.
+
+Ordem de trabalho (passo-a-passo)
+Passo 0 — Casca do documento (30–45 min)
+
+Crie um .docx com: capa → sumário → “Tópico 6” → subseções 6.1–6.5 (uma para cada item abaixo).
+
+Defina Estilos no Word (Normal 11 pt; Título 1=14 pt; Título 2=12 pt; Legenda).
+
+Ative numeração de figuras/tabelas (Referências → Inserir legenda) para facilitar cruzamentos.
+
+6.1 — Cronograma macro (3 trimestres)
+
+Ferramenta: Excel (aba “T6-Macro”).
+Como fazer (execução):
+
+Linhas = Trimestre (TRI1/2/3); Colunas = Meses M1–M9; barra Gantt (█) por mês.
+
+Ao lado, uma tabela com: Trimestre | Objetivo | Principais entregáveis (IDs E-T…) | Gate/TRL alvo.
+
+Layout no Word: 1 figura (Gantt) + 1 tabela de resumo (½ página).
+
+Sugestão de gates (9 meses):
+
+TRI1 (M1–M3): Hardware/comunicação → Gate G1 / TRL-4 (protótipo validado em bancada).
+
+TRI2 (M4–M6): Agentes/software → G2 / TRL-5 (validação em ambiente relevante).
+
+TRI3 (M7–M9): Deploy/integr. ERP/CMMS → G3 / TRL-6 (piloto em campo).
+
+6.2 — Cronograma macro mês-a-mês (entregáveis, métrica, TRL)
+
+Ferramenta: Excel (aba “T6-Mensal”).
+Tabela única (colunas): Mês | Entregável E-T… | Descrição curta | Métrica de aceite | Evidência (link) | TRL.
+
+Preencha máximo 3 entregáveis por mês (fica legível).
+
+Layout: 1 tabela (1 página) + frase de amarração (“Este quadro se alinha ao Gantt 6.1 e aos gates G1–G3”).
+
+6.3 — Cronograma micro (WBS + métricas + Riscos por etapa)
+
+Ferramenta: Excel (aba “T6-Micro”).
+Tabela WBS (colunas): ID WBS | Atividade (verbo no infinitivo) | Subtarefa | Responsável | Duração (dias) | Métrica de conclusão | Dependências (ID) | Risco | Prob. (1–5) | Impacto (1–5) | Mitigação | Evidência.
+
+Gere um mapa de calor (condicional) para risco Prob×Impacto.
+
+Layout no Word: 1 tabela filtrada por trimestre (máx. 20 linhas por exibição). Detalhes completos ficam no anexo Excel.
+
+6.4 — KPIs gerais do projeto por período
+
+Ferramenta: Excel (aba “T6-KPIs”).
+Tabela KPIs (colunas): KPI | Definição/ fórmula | Fonte de dados | Meta TRI1 | Meta TRI2 | Meta TRI3 | Frequência | Dono.
+Sugestões mínimas (alinhar ao projeto):
+
+Técnicos: F1/PR-AUC (detecção), Latência ponta-a-ponta (p95), PDR da rede, Autonomia (dias), Uptime (%), Falsos positivos (%), Dados perdidos (%).
+
+Negócio: MTTA/MTTR, OMs automatizadas (%), horas paradas evitadas, adesão HITL (% OMs com feedback).
+
+Layout: 1 tabela (½ página) + bullet de leitura (“KPIs serão auditados em G1–G3”).
+
+6.5 — Dificuldades gerais e como contornar (risk register)
+
+Ferramenta: Word (lista) + Excel (aba “T6-Riscos”).
+Como fazer:
+
+No Word: uma lista com 5–7 riscos “top-of-mind” por TRIMESTRE, cada um com: Causa → Efeito → Sinal de alerta → Plano de mitigação → Plano de contingência.
+
+No Excel: manter o registro detalhado já usado em 6.3.
+Categorias mínimas: técnico (robustez fora da distribuição, deriva de sensor), suprimentos (lead-time), integração (ERP/CMMS), rede/segurança, adesão operacional (HITL).
+Layout: meia página em bullet points + ícone/semáforo (Baixo/Med/Alto).
+
+Reordenação pontual (para fluidez e avaliação)
+
+Para o avaliador entender em 1 passada:
+
+6.1 Macro por Trimestre (foto de capa do planejamento).
+
+6.2 Mês-a-mês (o que “cai” em cada mês + TRL).
+
+6.3 Micro/WBS + riscos por etapa (prova de exequibilidade).
+
+6.4 KPIs por período (como medimos valor).
+
+6.5 Dificuldades & mitigação (governança de risco).
+
+Layout e dicas de formatação
+
+Densidade: 10–11 pt com espaçamento 1.08–1.15; tabelas com largura 100%, no máximo 7–9 colunas.
+
+Consistência: repetir IDs E-T… nas seções (rastreabilidade).
+
+Figuras: exportar Gantt/diagramas em PNG 300 dpi; legendar “Figura 6.x / Tabela 6.x”.
+
+Citações: use Zotero e mantenha um quadro de referências ao fim do Anexo 1.
+
+Checklists rápidos
+
+Para 6.1 (Trimestres):
+
+ Gantt M1–M9 com três faixas (TRI1/2/3).
+
+ Tabela de objetivos por TRIMESTRE + Gate/TRL.
+
+Para 6.2 (Mensal):
+
+ Máx. 3 entregáveis/mês, cada um com métrica clara e TRL.
+
+ Evidência (link/ID) já prevista.
+
+Para 6.3 (Micro):
+
+ WBS com verbo de ação + métrica de conclusão.
+
+ Risco por atividade (Prob×Impacto) com mitigação concreta.
+
+Para 6.4 (KPIs):
+
+ Mix técnico + negócio; metas por TRIMESTRE.
+
+ Dono e frequência de medição definidos.
+
+Para 6.5 (Riscos):
+
+ 5–7 riscos “top” por trimestre com sinal de alerta e plano B.
+
+ Registro detalhado no Excel.
+
+Se quiser, eu entrego agora:
+
+um DOCX esqueleto do Tópico 6 com as subseções 6.1–6.5, legendas e espaço para figuras;
+
+uma planilha com as abas T6-Macro, T6-Mensal, T6-Micro, T6-KPIs e T6-Riscos já formatadas (Gantt, KPIs e matrices de risco) — prontas para preencher.
