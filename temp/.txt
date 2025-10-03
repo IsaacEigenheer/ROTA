@@ -144,3 +144,12 @@ Se quiser, eu entrego agora:
 um DOCX esqueleto do Tópico 6 com as subseções 6.1–6.5, legendas e espaço para figuras;
 
 uma planilha com as abas T6-Macro, T6-Mensal, T6-Micro, T6-KPIs e T6-Riscos já formatadas (Gantt, KPIs e matrices de risco) — prontas para preencher.
+
+Crie um novo método na classe Extract "detect_line_connections"
+No arquivo "detections.csv" deve ler todas as linhas (lines) e para cada uma, de acordo com as coordenadas identificar qual outro componente está conectado a sua extremidade.
+Por exemplo, se minha compreensão das coordenadas estiver correta, x1 y1 seria o lado esquerdo, e x2 y2 o lado direito, com esses valores, para cada componente do tipo HOUSING e NODES deve identificar se o lado direito ou esquerdo da linha está entrando na região do componente. Cada extremidade deve ter apenas um componente, e as configurações possíveis são: H-H, N-N (diferentes) e H-N / N-H.
+Note que as linhas poderão ser horizontais, verticais ou estar inclinadas, se julgar o melhor cenário, aplique transformações matemáticas que obtém o ângulo da linha para ter mais precisão.
+Após, deve armazenar essas detecções feitas em outro CSV, contendo: Linha, Coordenads linha..., path imagem linha, Componente lado esq, Coordenadas com lado esq..., path imagem comp lado esq, comp lado dir, coordenadas comp lado dir..., path imagem comp lado dir
+
+
+Para consulta e entender as relações matemáticas das coordenadas, no desenvolvimento dessa função, deixarei uma tabela para consulta  dos valores corretos do desenho atual. Esse arquivo serve apenas para compreensão e desenvolvimento, não deve ser hardcoded nem contar com esse arquivo na função.
